@@ -2,7 +2,8 @@ library(shiny)
 library(bslib)
 library(plotly)
 library(DT)
-library(readxl) # Added for Excel file reading
+library(readxl)
+library(rmarkdown) # Added for automated HTML report generation
 
 # Define a list of popular pre-loaded datasets in R
 dataset_choices <- c("mtcars", "iris", "faithful", "airquality", "trees", "quakes", "swiss")
@@ -73,7 +74,9 @@ ui <- fluidPage(
       
       # Tools
       h5("Tools"),
-      actionButton("open_graph_modal", "Custom Graph", class = "btn-info", width = "100%")
+      actionButton("open_graph_modal", "Custom Graph", class = "btn-info", width = "100%"),
+      br(), br(),
+      downloadButton("download_report", "Download HTML Report", class = "btn-danger", style = "width: 100%;")
     ),
     
     mainPanel(
@@ -174,7 +177,6 @@ server <- function(input, output, session) {
       
       return(df)
     } else {
-      # Require a file to be uploaded before proceeding
       req(input$file_upload)
       df <- as.data.frame(readxl::read_excel(input$file_upload$datapath))
       return(df)
@@ -286,8 +288,6 @@ server <- function(input, output, session) {
   observeEvent(input$open_graph_modal, {
     df <- datasetInput()
     all_cols <- names(df)
-    
-    # Adjust title based on data source
     title_text <- if(input$data_source == "Preloaded Dataset") input$dataset else input$file_upload$name
     
     showModal(modalDialog(
@@ -358,12 +358,12 @@ server <- function(input, output, session) {
                    br(),
                    HTML("
               <ul style='font-size: 1.1em; line-height: 1.8;'>
-                <li><b>p-value:</b> The probability of observing results as extreme as those in the data, assuming the null hypothesis is true. A lower p-value indicates stronger evidence against the null hypothesis.</li>
-                <li><b>Alpha (\\(\\alpha\\)):</b> The significance level, typically set to 0.05. It is the threshold probability of rejecting the null hypothesis when it is actually true (Type I error).</li>
-                <li><b>Null Hypothesis (\\(H_0\\)):</b> The default assumption that there is no significant effect, difference, or relationship in the dataset.</li>
+                <li><b>p-value:</b> The probability of observing results as extreme as those in the data, assuming the null hypothesis is true.</li>
+                <li><b>Alpha (\\(\\alpha\\)):</b> The significance level, typically set to 0.05.</li>
+                <li><b>Null Hypothesis (\\(H_0\\)):</b> The default assumption that there is no significant effect or difference.</li>
                 <li><b>Interquartile Range (IQR):</b> A measure of statistical dispersion representing the middle 50% of the data.</li>
-                <li><b>Parametric Tests:</b> Statistical tests (like ANOVA, T-Test) that assume data follows a specific distribution (usually normal).</li>
-                <li><b>Non-Parametric Tests:</b> Statistical tests (like Kruskal-Wallis, Wilcoxon) that do not assume the data follows a specific distribution. Used when data is skewed or ordinal.</li>
+                <li><b>Parametric Tests:</b> Statistical tests (like ANOVA, T-Test) that assume data follows a normal distribution.</li>
+                <li><b>Non-Parametric Tests:</b> Statistical tests (like Kruskal-Wallis, Wilcoxon) used when data is skewed or ordinal.</li>
               </ul>
             ")
           ),
@@ -374,17 +374,15 @@ server <- function(input, output, session) {
                 <h5 style='color: #f39c12;'>Parametric Tests (T-Test & ANOVA)</h5>
                 <ul>
                   <li><b>Independence:</b> Observations in one group are independent of observations in another.</li>
-                  <li><b>Normality:</b> The data in each group should be approximately normally distributed (tested via Shapiro-Wilk).</li>
+                  <li><b>Normality:</b> The data in each group should be approximately normally distributed.</li>
                   <li><b>Homogeneity of Variance:</b> The variances of the groups should be roughly equal.</li>
                 </ul>
               </div>
-              
               <div style='padding: 10px; background-color: #333; border-radius: 5px;'>
                 <h5 style='color: #00bc8c;'>Non-Parametric Tests (Wilcoxon & Kruskal-Wallis)</h5>
                 <ul>
-                  <li><b>Use When:</b> Your data fails the Shapiro-Wilk test (p < 0.05) or includes significant outliers.</li>
+                  <li><b>Use When:</b> Your data fails the Shapiro-Wilk test (p < 0.05).</li>
                   <li><b>Independence:</b> The samples are independent of each other.</li>
-                  <li><b>Shape:</b> These tests do not assume normality, but they do assume the distributions of the groups have similar shapes to test for differences in medians.</li>
                 </ul>
               </div>
             ")
@@ -396,15 +394,12 @@ server <- function(input, output, session) {
                 <p style='color: #00bc8c; font-weight: bold;'>Sample Variance:</p>
                 <p>$$s^2 = \\frac{\\sum_{i=1}^{n} (x_i - \\bar{x})^2}{n-1}$$</p>
                 <hr style='border-color: #444;'>
-                
                 <p style='color: #00bc8c; font-weight: bold;'>Sample Standard Deviation:</p>
                 <p>$$s = \\sqrt{ \\frac{\\sum_{i=1}^{n} (x_i - \\bar{x})^2}{n-1} }$$</p>
                 <hr style='border-color: #444;'>
-                
                 <p style='color: #f39c12; font-weight: bold;'>T-Statistic (Welch's Two-Sample):</p>
                 <p>$$t = \\frac{\\bar{x}_1 - \\bar{x}_2}{\\sqrt{ \\frac{s_1^2}{n_1} + \\frac{s_2^2}{n_2} }}$$</p>
                 <hr style='border-color: #444;'>
-                
                 <p style='color: #f39c12; font-weight: bold;'>F-Statistic (ANOVA):</p>
                 <p>$$F = \\frac{MS_{between}}{MS_{within}}$$</p>
               </div>
@@ -414,6 +409,109 @@ server <- function(input, output, session) {
       ) 
     ))
   })
+  
+  # --- Automated HTML Report Generation Logic ---
+  
+  output$download_report <- downloadHandler(
+    filename = function() {
+      paste("Statistical_Report_", Sys.Date(), ".html", sep = "")
+    },
+    content = function(file) {
+      # Show a progress notification while the document is knitting
+      showNotification("Generating report, this may take a moment...", type = "message", id = "report_notif", duration = NULL)
+      on.exit(removeNotification("report_notif"), add = TRUE)
+      
+      # Create a temporary R Markdown file
+      tempReport <- file.path(tempdir(), "automated_report.Rmd")
+      
+      # Define the R Markdown content as a string
+      rmd_content <- c(
+        "---",
+        "title: 'Exploratory Data Analysis Report'",
+        "date: '`r Sys.Date()`'",
+        "output:",
+        "  html_document:",
+        "    theme: darkly",
+        "    toc: true",
+        "    toc_float: true",
+        "params:",
+        "  df: NA",
+        "  num_col: NA",
+        "  factor_col: NA",
+        "  ds_name: NA",
+        "---",
+        "",
+        "```{r setup, include=FALSE}",
+        "knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)",
+        "library(plotly)",
+        "```",
+        "",
+        "## Analysis Configuration",
+        "**Dataset Source:** `r params$ds_name`  ",
+        "**Numeric Variable (Dependent):** `r params$num_col`  ",
+        "**Grouping Variable (Factor):** `r params$factor_col`  ",
+        "",
+        "---",
+        "",
+        "## Descriptive Statistics",
+        "```{r}",
+        "x <- na.omit(params$df[[params$num_col]])",
+        "stats_df <- data.frame(",
+        "  Metric = c('Valid Rows', 'Missing (NA)', 'Minimum', '1st Quartile', 'Median', 'Mean', '3rd Quartile', 'Maximum', 'Variance', 'Standard Dev', 'IQR'),",
+        "  Value = c(length(x), sum(is.na(params$df[[params$num_col]])), min(x), quantile(x, 0.25, names = FALSE), median(x), mean(x), quantile(x, 0.75, names = FALSE), max(x), var(x), sd(x), IQR(x))",
+        ")",
+        "knitr::kable(stats_df, digits = 4, col.names = c('Metric', 'Value'), align = 'l')",
+        "```",
+        "",
+        "---",
+        "",
+        "## Visualizations",
+        "```{r fig.width=8, fig.height=4}",
+        "plot_ly(x = ~params$df[[params$num_col]], type = 'histogram', name = params$num_col, marker = list(color = '#00bc8c', line = list(color = 'white', width = 1))) %>%",
+        "  layout(title = paste('Histogram of', params$num_col), xaxis = list(title = params$num_col), yaxis = list(title = 'Frequency'), plot_bgcolor = '#222222', paper_bgcolor = '#222222', font = list(color = 'white'))",
+        "```",
+        "",
+        "```{r fig.width=8, fig.height=4}",
+        "plot_ly(y = ~params$df[[params$num_col]], type = 'box', name = params$num_col, marker = list(color = '#375a7f'), line = list(color = '#375a7f')) %>%",
+        "  layout(title = paste('Boxplot of', params$num_col), yaxis = list(title = params$num_col), plot_bgcolor = '#222222', paper_bgcolor = '#222222', font = list(color = 'white'))",
+        "```",
+        "",
+        "---",
+        "",
+        "## Normality Assumption (Shapiro-Wilk)",
+        "```{r}",
+        "if(length(x) >= 3 && length(x) <= 5000) {",
+        "  res <- shapiro.test(x)",
+        "  cat('**W-Statistic:**', round(res$statistic, 4), '  \\n')",
+        "  cat('**p-value:**', format.pval(res$p.value, digits = 4), '  \\n\\n')",
+        "  if (res$p.value < 0.05) {",
+        "    cat('**Conclusion:** The data significantly deviates from a normal distribution. **Non-parametric tests are recommended.**')",
+        "  } else {",
+        "    cat('**Conclusion:** There is insufficient evidence to state the data deviates from normal distribution. **Parametric tests are appropriate.**')",
+        "  }",
+        "} else {",
+        "  cat('Sample size must be between 3 and 5000 observations to run the Shapiro-Wilk test.')",
+        "}",
+        "```"
+      )
+      
+      writeLines(rmd_content, tempReport)
+      
+      # Determine dataset name for the report
+      ds_name_val <- if (input$data_source == "Preloaded Dataset") input$dataset else input$file_upload$name
+      
+      # Render the temporary Rmd file to HTML
+      rmarkdown::render(tempReport, output_file = file,
+                        params = list(
+                          df = datasetInput(),
+                          num_col = input$column,
+                          factor_col = input$factor_column,
+                          ds_name = ds_name_val
+                        ),
+                        envir = new.env(parent = globalenv())
+      )
+    }
+  )
   
   # --- Statistical Tests Data Store ---
   
@@ -446,7 +544,6 @@ server <- function(input, output, session) {
         normality_results(list(test = res))
       }
       
-      # Modal Alert for Non-Normal Data
       if (res$p.value < 0.05) {
         showModal(modalDialog(
           title = "Normality Assumption Violated",
@@ -612,7 +709,7 @@ server <- function(input, output, session) {
     HTML(paste0("<div style='padding: 15px; border-left: 4px solid #3498db; background-color: #333; margin-top: 10px;'><b>Interpretation:</b> Based on the adjusted p-values:<br><br><span style='color: #f39c12; font-weight: bold;'>Significantly different means (p < 0.05):</span>", sig_text, "<span style='color: #00bc8c; font-weight: bold;'>Not significantly different means (p >= 0.05):</span>", nonsig_text, "</div>"))
   })
   
-  # Kruskal-Wallis (Non-Parametric)
+  # Kruskal-Wallis
   observeEvent(input$run_kruskal, {
     req(input$column, input$factor_column)
     df <- datasetInput()
@@ -646,7 +743,7 @@ server <- function(input, output, session) {
     }
   })
   
-  # Wilcoxon (Non-Parametric)
+  # Wilcoxon
   observeEvent(input$run_wilcox, {
     req(input$column, input$factor_column)
     df <- datasetInput()
