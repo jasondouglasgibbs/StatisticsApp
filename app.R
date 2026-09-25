@@ -2,34 +2,78 @@ library(shiny)
 library(bslib)
 library(plotly)
 library(DT)
+library(readxl) # Added for Excel file reading
 
 # Define a list of popular pre-loaded datasets in R
 dataset_choices <- c("mtcars", "iris", "faithful", "airquality", "trees", "quakes", "swiss")
 
 # Define UI
 ui <- fluidPage(
+  # Initialize MathJax to render statistical formulas
+  withMathJax(),
+  
   # Apply a dark mode theme using bslib
   theme = bs_theme(bootswatch = "darkly"),
   
-  titlePanel("Interactive R Dataset Explorer"),
+  # Flexbox header to place the title on the left and the guide button on the right
+  div(
+    style = "display: flex; justify-content: space-between; align-items: center; margin-top: 15px; margin-bottom: 20px;",
+    h2("Interactive R Dataset Explorer", style = "margin: 0;"),
+    actionButton("open_ref_modal", "Statistical Guide", class = "btn-success")
+  ),
   
   sidebarLayout(
     sidebarPanel(
-      # Dropdown to select the dataset
-      selectInput("dataset", "Choose a dataset:", choices = dataset_choices),
+      # Data Source Toggle
+      radioButtons("data_source", "Data Source:", choices = c("Preloaded Dataset", "Upload Excel")),
+      
+      # Conditional panel for Preloaded Datasets
+      conditionalPanel(
+        condition = "input.data_source == 'Preloaded Dataset'",
+        selectInput("dataset", "Choose a dataset:", choices = dataset_choices)
+      ),
+      
+      # Conditional panel for Excel Upload
+      conditionalPanel(
+        condition = "input.data_source == 'Upload Excel'",
+        fileInput("file_upload", "Choose Excel File", accept = c(".xlsx", ".xls"))
+      ),
       
       # Dynamic dropdown for column selection
       uiOutput("col_select"),
       
       hr(),
       
-      # Buttons for Normality Testing and Modal Graphing
+      # Buttons for Normality Testing
       h5("Analysis & Visuals"),
       actionButton("run_tests", "Run Normality Test", class = "btn-primary", width = "100%"),
       
       br(), br(),
       
-      actionButton("open_graph_modal", "Graph", class = "btn-info", width = "100%")
+      # Group-based statistical testing
+      h5("Group-Based Testing"),
+      uiOutput("factor_select"),
+      
+      p(strong("Parametric Tests (Assumes Normality):"), style = "margin-bottom: 5px; color: #f39c12;"),
+      fluidRow(
+        column(4, actionButton("run_anova", "ANOVA", class = "btn-warning", width = "100%")),
+        column(4, actionButton("run_ttest", "T-Test", class = "btn-warning", width = "100%")),
+        column(4, actionButton("run_tukey", "Tukey's", class = "btn-warning", width = "100%"))
+      ),
+      
+      br(),
+      
+      p(strong("Non-Parametric Tests (No Normality Assumed):"), style = "margin-bottom: 5px; color: #00bc8c;"),
+      fluidRow(
+        column(6, actionButton("run_kruskal", "Kruskal-Wallis", class = "btn-success", width = "100%")),
+        column(6, actionButton("run_wilcox", "Wilcoxon", class = "btn-success", width = "100%"))
+      ),
+      
+      br(),
+      
+      # Tools
+      h5("Tools"),
+      actionButton("open_graph_modal", "Custom Graph", class = "btn-info", width = "100%")
     ),
     
     mainPanel(
@@ -63,9 +107,48 @@ ui <- fluidPage(
       hr(),
       
       # Normality Test Results Section
-      h4("Normality Test Results (Shapiro-Wilk)"),
-      verbatimTextOutput("normality_test_out"),
-      uiOutput("normality_explanation"), 
+      wellPanel(
+        h4("Normality Test Results (Shapiro-Wilk)"),
+        verbatimTextOutput("normality_test_out"),
+        uiOutput("normality_explanation")
+      ),
+      
+      hr(),
+      
+      # Advanced Statistical Tests Results Section
+      h3("Group-Based Test Results"),
+      
+      # Parametric
+      wellPanel(
+        h4("ANOVA (Analysis of Variance)"),
+        verbatimTextOutput("anova_out"),
+        uiOutput("anova_exp")
+      ),
+      
+      wellPanel(
+        h4("Two-Sample T-Test"),
+        verbatimTextOutput("ttest_out"),
+        uiOutput("ttest_exp")
+      ),
+      
+      wellPanel(
+        h4("Tukey's HSD (Honest Significant Difference)"),
+        verbatimTextOutput("tukey_out"),
+        uiOutput("tukey_exp")
+      ),
+      
+      # Non-Parametric
+      wellPanel(
+        h4("Kruskal-Wallis Rank Sum Test"),
+        verbatimTextOutput("kruskal_out"),
+        uiOutput("kruskal_exp")
+      ),
+      
+      wellPanel(
+        h4("Wilcoxon Rank-Sum Test (Mann-Whitney U)"),
+        verbatimTextOutput("wilcox_out"),
+        uiOutput("wilcox_exp")
+      ),
       
       br(), br() 
     )
@@ -75,33 +158,40 @@ ui <- fluidPage(
 # Define Server logic
 server <- function(input, output, session) {
   
-  # Reactive expression to fetch the selected dataset
+  # Reactive expression to fetch the selected dataset or uploaded file
   datasetInput <- reactive({
-    # Get the raw dataset
-    raw_df <- get(input$dataset, "package:datasets")
-    
-    # Coerce to dataframe (handles matrix datasets if they exist)
-    df <- as.data.frame(raw_df)
-    
-    # Extract current row names and expected default row names (1 to N)
-    r_names <- row.names(df)
-    default_names <- as.character(seq_len(nrow(df)))
-    
-    # If the row names aren't just default sequences, add them as "Title"
-    if (!identical(r_names, default_names)) {
-      df <- cbind(Title = r_names, df)
-      row.names(df) <- NULL # Clear row names to prevent visual redundancy
+    if (input$data_source == "Preloaded Dataset") {
+      raw_df <- get(input$dataset, "package:datasets")
+      df <- as.data.frame(raw_df)
+      
+      r_names <- row.names(df)
+      default_names <- as.character(seq_len(nrow(df)))
+      
+      if (!identical(r_names, default_names)) {
+        df <- cbind(Title = r_names, df)
+        row.names(df) <- NULL 
+      }
+      
+      return(df)
+    } else {
+      # Require a file to be uploaded before proceeding
+      req(input$file_upload)
+      df <- as.data.frame(readxl::read_excel(input$file_upload$datapath))
+      return(df)
     }
-    
-    return(df)
   })
   
-  # Dynamically render the column selection input for main dashboard
+  # Dynamically render the numeric column selection input
   output$col_select <- renderUI({
     df <- datasetInput()
-    # Filter for only numeric columns for the main dash
     numeric_cols <- names(df)[sapply(df, is.numeric)]
-    selectInput("column", "Choose a numeric column:", choices = numeric_cols)
+    selectInput("column", "Choose a numeric column (Dependent Variable):", choices = numeric_cols)
+  })
+  
+  # Dynamically render the factor selection input containing ALL columns
+  output$factor_select <- renderUI({
+    df <- datasetInput()
+    selectInput("factor_column", "Choose a grouping column (Factor):", choices = names(df))
   })
   
   # Render the interactive data table
@@ -197,8 +287,11 @@ server <- function(input, output, session) {
     df <- datasetInput()
     all_cols <- names(df)
     
+    # Adjust title based on data source
+    title_text <- if(input$data_source == "Preloaded Dataset") input$dataset else input$file_upload$name
+    
     showModal(modalDialog(
-      title = paste("Custom Graph Plotter -", input$dataset),
+      title = paste("Custom Graph Plotter -", title_text),
       size = "xl", 
       fluidRow(
         column(4, selectInput("mod_x", "X-Axis Variable:", choices = all_cols)),
@@ -221,7 +314,6 @@ server <- function(input, output, session) {
     
     p <- plot_ly()
     
-    # 1-Dimensional Plot
     if (y_col == "None") {
       if (type %in% c("Scatter", "Line")) {
         mode_val <- ifelse(type == "Scatter", "markers", "lines")
@@ -231,9 +323,7 @@ server <- function(input, output, session) {
       } else if (type == "Box") {
         p <- plot_ly(y = ~df[[x_col]], type = "box", name = x_col, marker = list(color = "#f39c12"))
       }
-    } 
-    # 2-Dimensional Plot
-    else {
+    } else {
       if (type %in% c("Scatter", "Line")) {
         mode_val <- ifelse(type == "Scatter", "markers", "lines")
         p <- plot_ly(x = ~df[[x_col]], y = ~df[[y_col]], type = "scatter", mode = mode_val, marker = list(color = "#f39c12"))
@@ -254,73 +344,340 @@ server <- function(input, output, session) {
     apply_plotly_dark_theme(p)
   })
   
-  # --- Normality Test Logic ---
+  # --- Statistical Reference Modal Logic ---
   
-  test_results <- reactiveVal(NULL)
-  
-  observeEvent(c(input$dataset, input$column), {
-    test_results(NULL)
+  observeEvent(input$open_ref_modal, {
+    showModal(modalDialog(
+      title = "Statistical Guide & Reference",
+      size = "l", 
+      easyClose = TRUE,
+      footer = modalButton("Close"),
+      withMathJax(
+        tabsetPanel(
+          tabPanel("Glossary", 
+                   br(),
+                   HTML("
+              <ul style='font-size: 1.1em; line-height: 1.8;'>
+                <li><b>p-value:</b> The probability of observing results as extreme as those in the data, assuming the null hypothesis is true. A lower p-value indicates stronger evidence against the null hypothesis.</li>
+                <li><b>Alpha (\\(\\alpha\\)):</b> The significance level, typically set to 0.05. It is the threshold probability of rejecting the null hypothesis when it is actually true (Type I error).</li>
+                <li><b>Null Hypothesis (\\(H_0\\)):</b> The default assumption that there is no significant effect, difference, or relationship in the dataset.</li>
+                <li><b>Interquartile Range (IQR):</b> A measure of statistical dispersion representing the middle 50% of the data.</li>
+                <li><b>Parametric Tests:</b> Statistical tests (like ANOVA, T-Test) that assume data follows a specific distribution (usually normal).</li>
+                <li><b>Non-Parametric Tests:</b> Statistical tests (like Kruskal-Wallis, Wilcoxon) that do not assume the data follows a specific distribution. Used when data is skewed or ordinal.</li>
+              </ul>
+            ")
+          ),
+          tabPanel("Assumptions Checklist",
+                   br(),
+                   HTML("
+              <div style='padding: 10px; background-color: #333; border-radius: 5px; margin-bottom: 15px;'>
+                <h5 style='color: #f39c12;'>Parametric Tests (T-Test & ANOVA)</h5>
+                <ul>
+                  <li><b>Independence:</b> Observations in one group are independent of observations in another.</li>
+                  <li><b>Normality:</b> The data in each group should be approximately normally distributed (tested via Shapiro-Wilk).</li>
+                  <li><b>Homogeneity of Variance:</b> The variances of the groups should be roughly equal.</li>
+                </ul>
+              </div>
+              
+              <div style='padding: 10px; background-color: #333; border-radius: 5px;'>
+                <h5 style='color: #00bc8c;'>Non-Parametric Tests (Wilcoxon & Kruskal-Wallis)</h5>
+                <ul>
+                  <li><b>Use When:</b> Your data fails the Shapiro-Wilk test (p < 0.05) or includes significant outliers.</li>
+                  <li><b>Independence:</b> The samples are independent of each other.</li>
+                  <li><b>Shape:</b> These tests do not assume normality, but they do assume the distributions of the groups have similar shapes to test for differences in medians.</li>
+                </ul>
+              </div>
+            ")
+          ),
+          tabPanel("Formulae",
+                   br(),
+                   HTML("
+              <div style='text-align: center; font-size: 1.2em; padding: 15px; background-color: #222; border-radius: 5px;'>
+                <p style='color: #00bc8c; font-weight: bold;'>Sample Variance:</p>
+                <p>$$s^2 = \\frac{\\sum_{i=1}^{n} (x_i - \\bar{x})^2}{n-1}$$</p>
+                <hr style='border-color: #444;'>
+                
+                <p style='color: #00bc8c; font-weight: bold;'>Sample Standard Deviation:</p>
+                <p>$$s = \\sqrt{ \\frac{\\sum_{i=1}^{n} (x_i - \\bar{x})^2}{n-1} }$$</p>
+                <hr style='border-color: #444;'>
+                
+                <p style='color: #f39c12; font-weight: bold;'>T-Statistic (Welch's Two-Sample):</p>
+                <p>$$t = \\frac{\\bar{x}_1 - \\bar{x}_2}{\\sqrt{ \\frac{s_1^2}{n_1} + \\frac{s_2^2}{n_2} }}$$</p>
+                <hr style='border-color: #444;'>
+                
+                <p style='color: #f39c12; font-weight: bold;'>F-Statistic (ANOVA):</p>
+                <p>$$F = \\frac{MS_{between}}{MS_{within}}$$</p>
+              </div>
+            ")
+          )
+        )
+      ) 
+    ))
   })
   
+  # --- Statistical Tests Data Store ---
+  
+  normality_results <- reactiveVal(NULL)
+  test_store <- reactiveValues(anova = NULL, ttest = NULL, tukey = NULL, wilcox = NULL, kruskal = NULL)
+  
+  observeEvent(c(input$data_source, input$dataset, input$file_upload, input$column, input$factor_column), {
+    normality_results(NULL)
+    test_store$anova <- NULL
+    test_store$ttest <- NULL
+    test_store$tukey <- NULL
+    test_store$wilcox <- NULL
+    test_store$kruskal <- NULL
+  })
+  
+  # --- Normality Logic & Popup ---
   observeEvent(input$run_tests, {
     req(input$column)
     df <- datasetInput()
     x <- na.omit(df[[input$column]])
     
     if (length(x) < 3) {
-      test_results(list(error = "Sample size is too small (n < 3) to perform the Shapiro-Wilk test."))
-    } else if (length(x) > 5000) {
-      res <- shapiro.test(sample(x, 5000))
-      test_results(list(test = res, warning = "Warning: Sample size > 5000. Data was randomly sampled to 5000 observations."))
+      normality_results(list(error = "Sample size is too small (n < 3) to perform the Shapiro-Wilk test."))
     } else {
-      res <- shapiro.test(x)
-      test_results(list(test = res))
+      if (length(x) > 5000) {
+        res <- shapiro.test(sample(x, 5000))
+        normality_results(list(test = res, warning = "Warning: Sample size > 5000. Data was randomly sampled to 5000 observations."))
+      } else {
+        res <- shapiro.test(x)
+        normality_results(list(test = res))
+      }
+      
+      # Modal Alert for Non-Normal Data
+      if (res$p.value < 0.05) {
+        showModal(modalDialog(
+          title = "Normality Assumption Violated",
+          HTML(paste0(
+            "<div style='color: #e74c3c; margin-bottom: 15px;'>",
+            "The Shapiro-Wilk test indicates that the data for <b>", input$column, 
+            "</b> significantly deviates from a normal distribution (p < 0.05).",
+            "</div>",
+            "<div style='background-color: #333; padding: 15px; border-radius: 5px;'>",
+            "<h5 style='color: #00bc8c;'>Recommendation:</h5>",
+            "<p>It is highly recommended to use the <b>Non-Parametric alternatives</b> for your group-based testing instead of ANOVA or the T-Test:</p>",
+            "<ul>",
+            "<li>Use <b>Wilcoxon</b> for 2 groups.</li>",
+            "<li>Use <b>Kruskal-Wallis</b> for 3 or more groups.</li>",
+            "</ul>",
+            "</div>"
+          )),
+          easyClose = TRUE,
+          footer = modalButton("Understood")
+        ))
+      }
     }
   })
   
   output$normality_test_out <- renderPrint({
-    res <- test_results()
-    if (is.null(res)) {
-      cat("Waiting... Click 'Run Normality Test' in the sidebar to execute.")
-    } else if (!is.null(res$error)) {
-      cat(res$error)
-    } else {
-      if (!is.null(res$warning)) {
-        cat(res$warning, "\n\n")
-      }
+    res <- normality_results()
+    if (is.null(res)) cat("Waiting... Click 'Run Normality Test' in the sidebar.")
+    else if (!is.null(res$error)) cat(res$error)
+    else {
+      if (!is.null(res$warning)) cat(res$warning, "\n\n")
       print(res$test)
     }
   })
   
   output$normality_explanation <- renderUI({
-    res <- test_results()
+    res <- normality_results()
+    if (is.null(res) || !is.null(res$error)) return(NULL)
+    p_val <- res$test$p.value
     
+    if (p_val < 0.05) {
+      HTML(paste0("<div style='color: #e74c3c; padding: 10px; border-left: 4px solid #e74c3c; background-color: #333; margin-top: 10px;'><b>Interpretation:</b> p-value (<b>", format.pval(p_val, digits = 4), "</b>) < 0.05. Strong evidence that the data <u>significantly deviates from a normal distribution</u>.</div>"))
+    } else {
+      HTML(paste0("<div style='color: #00bc8c; padding: 10px; border-left: 4px solid #00bc8c; background-color: #333; margin-top: 10px;'><b>Interpretation:</b> p-value (<b>", format.pval(p_val, digits = 4), "</b>) >= 0.05. <u>Insufficient evidence to state the data deviates from a normal distribution</u>. Normal distribution is assumed.</div>"))
+    }
+  })
+  
+  # --- Group-Based Testing Core Execution Logic ---
+  
+  prepare_group_data <- function(df, factor_col_name) {
+    original_col <- df[[factor_col_name]]
+    df[[factor_col_name]] <- as.factor(df[[factor_col_name]])
+    levels_count <- length(levels(na.omit(df[[factor_col_name]])))
+    return(list(df = df, original_col = original_col, levels_count = levels_count))
+  }
+  
+  revert_group_data <- function(df, factor_col_name, original_col) {
+    df[[factor_col_name]] <- original_col
+    return(df)
+  }
+  
+  # ANOVA
+  observeEvent(input$run_anova, {
+    req(input$column, input$factor_column)
+    df <- datasetInput()
+    prep <- prepare_group_data(df, input$factor_column)
+    fmla <- as.formula(paste0("`", input$column, "` ~ `", input$factor_column, "`"))
+    
+    if (prep$levels_count < 2) {
+      test_store$anova <- list(error = paste("ANOVA requires at least 2 distinct groups. Found:", prep$levels_count))
+    } else {
+      aov_res <- aov(fmla, data = prep$df)
+      test_store$anova <- list(res = summary(aov_res), factor = input$factor_column, dep = input$column)
+    }
+    df <- revert_group_data(prep$df, input$factor_column, prep$original_col)
+  })
+  
+  output$anova_out <- renderPrint({
+    if (is.null(test_store$anova)) cat("Waiting... Click 'ANOVA' in the sidebar.")
+    else if (!is.null(test_store$anova$error)) cat("ERROR:", test_store$anova$error)
+    else print(test_store$anova$res)
+  })
+  
+  output$anova_exp <- renderUI({
+    res <- test_store$anova
+    if (is.null(res) || !is.null(res$error)) return(NULL)
+    p_val <- res$res[[1]][["Pr(>F)"]][1]
+    
+    if (p_val < 0.05) {
+      HTML(paste0("<div style='color: #e74c3c; padding: 10px; border-left: 4px solid #e74c3c; background-color: #333; margin-top: 10px;'><b>Interpretation:</b> The p-value (<b>", format.pval(p_val, digits=4), "</b>) is < 0.05. There is a statistically significant difference in the mean of <b>", res$dep, "</b> between at least two groups of <b>", res$factor, "</b>.</div>"))
+    } else {
+      HTML(paste0("<div style='color: #00bc8c; padding: 10px; border-left: 4px solid #00bc8c; background-color: #333; margin-top: 10px;'><b>Interpretation:</b> The p-value (<b>", format.pval(p_val, digits=4), "</b>) is >= 0.05. There is no statistically significant difference in the mean of <b>", res$dep, "</b> across the groups of <b>", res$factor, "</b>.</div>"))
+    }
+  })
+  
+  # T-Test
+  observeEvent(input$run_ttest, {
+    req(input$column, input$factor_column)
+    df <- datasetInput()
+    prep <- prepare_group_data(df, input$factor_column)
+    fmla <- as.formula(paste0("`", input$column, "` ~ `", input$factor_column, "`"))
+    
+    if (prep$levels_count != 2) {
+      test_store$ttest <- list(error = paste("A Two-Sample T-Test requires exactly 2 distinct groups. Found:", prep$levels_count))
+    } else {
+      t_res <- t.test(fmla, data = prep$df)
+      test_store$ttest <- list(res = t_res, factor = input$factor_column, dep = input$column)
+    }
+    df <- revert_group_data(prep$df, input$factor_column, prep$original_col)
+  })
+  
+  output$ttest_out <- renderPrint({
+    if (is.null(test_store$ttest)) cat("Waiting... Click 'T-Test' in the sidebar.")
+    else if (!is.null(test_store$ttest$error)) cat("ERROR:", test_store$ttest$error)
+    else print(test_store$ttest$res)
+  })
+  
+  output$ttest_exp <- renderUI({
+    res <- test_store$ttest
+    if (is.null(res) || !is.null(res$error)) return(NULL)
+    p_val <- res$res$p.value
+    
+    if (p_val < 0.05) {
+      HTML(paste0("<div style='color: #e74c3c; padding: 10px; border-left: 4px solid #e74c3c; background-color: #333; margin-top: 10px;'><b>Interpretation:</b> The p-value (<b>", format.pval(p_val, digits=4), "</b>) is < 0.05. The means of the two groups are <u>significantly different</u> from each other.</div>"))
+    } else {
+      HTML(paste0("<div style='color: #00bc8c; padding: 10px; border-left: 4px solid #00bc8c; background-color: #333; margin-top: 10px;'><b>Interpretation:</b> The p-value (<b>", format.pval(p_val, digits=4), "</b>) is >= 0.05. The means of the two groups are <u>not significantly different</u>.</div>"))
+    }
+  })
+  
+  # Tukey's
+  observeEvent(input$run_tukey, {
+    req(input$column, input$factor_column)
+    df <- datasetInput()
+    prep <- prepare_group_data(df, input$factor_column)
+    fmla <- as.formula(paste0("`", input$column, "` ~ `", input$factor_column, "`"))
+    
+    if (prep$levels_count < 2) {
+      test_store$tukey <- list(error = paste("Tukey's HSD requires at least 2 distinct groups. Found:", prep$levels_count))
+    } else {
+      aov_res <- aov(fmla, data = prep$df)
+      tukey_res <- TukeyHSD(aov_res)
+      test_store$tukey <- list(res = tukey_res, factor = input$factor_column, dep = input$column)
+    }
+    df <- revert_group_data(prep$df, input$factor_column, prep$original_col)
+  })
+  
+  output$tukey_out <- renderPrint({
+    if (is.null(test_store$tukey)) cat("Waiting... Click 'Tukey's' in the sidebar.")
+    else if (!is.null(test_store$tukey$error)) cat("ERROR:", test_store$tukey$error)
+    else print(test_store$tukey$res)
+  })
+  
+  output$tukey_exp <- renderUI({
+    res <- test_store$tukey
     if (is.null(res) || !is.null(res$error)) return(NULL)
     
-    p_val <- res$test$p.value
-    alpha <- 0.05
+    tukey_mat <- res$res[[1]]
+    sig_pairs <- rownames(tukey_mat)[which(tukey_mat[, "p adj"] < 0.05)]
+    nonsig_pairs <- rownames(tukey_mat)[which(tukey_mat[, "p adj"] >= 0.05)]
     
-    if (p_val < alpha) {
-      explanation_html <- HTML(paste0(
-        "<div style='color: #e74c3c; padding: 15px; border-left: 4px solid #e74c3c; background-color: #333;'>",
-        "<b>Interpretation:</b> The p-value (<b>", format.pval(p_val, digits = 4), 
-        "</b>) is less than the standard significance level of 0.05. ",
-        "We reject the null hypothesis, indicating strong evidence that the data for <b>", 
-        input$column, "</b> <u>significantly deviates from a normal distribution</u>.",
-        "</div>"
-      ))
+    sig_text <- if (length(sig_pairs) > 0) paste0("<ul style='color: #f39c12; margin-bottom: 10px;'>", paste("<li>", sig_pairs, "</li>", collapse = ""), "</ul>") else "<p style='color: #f39c12; margin-bottom: 10px;'><em>None</em></p>"
+    nonsig_text <- if (length(nonsig_pairs) > 0) paste0("<ul style='color: #00bc8c;'>", paste("<li>", nonsig_pairs, "</li>", collapse = ""), "</ul>") else "<p style='color: #00bc8c;'><em>None</em></p>"
+    
+    HTML(paste0("<div style='padding: 15px; border-left: 4px solid #3498db; background-color: #333; margin-top: 10px;'><b>Interpretation:</b> Based on the adjusted p-values:<br><br><span style='color: #f39c12; font-weight: bold;'>Significantly different means (p < 0.05):</span>", sig_text, "<span style='color: #00bc8c; font-weight: bold;'>Not significantly different means (p >= 0.05):</span>", nonsig_text, "</div>"))
+  })
+  
+  # Kruskal-Wallis (Non-Parametric)
+  observeEvent(input$run_kruskal, {
+    req(input$column, input$factor_column)
+    df <- datasetInput()
+    prep <- prepare_group_data(df, input$factor_column)
+    fmla <- as.formula(paste0("`", input$column, "` ~ `", input$factor_column, "`"))
+    
+    if (prep$levels_count < 2) {
+      test_store$kruskal <- list(error = paste("The Kruskal-Wallis Test requires at least 2 distinct groups. Found:", prep$levels_count))
     } else {
-      explanation_html <- HTML(paste0(
-        "<div style='color: #00bc8c; padding: 15px; border-left: 4px solid #00bc8c; background-color: #333;'>",
-        "<b>Interpretation:</b> The p-value (<b>", format.pval(p_val, digits = 4), 
-        "</b>) is greater than or equal to the significance level of 0.05. ",
-        "We fail to reject the null hypothesis, meaning there is <u>insufficient evidence to state that the data deviates from a normal distribution</u>. ",
-        "It is reasonable to assume normality for <b>", input$column, "</b>.",
-        "</div>"
-      ))
+      res <- kruskal.test(fmla, data = prep$df)
+      test_store$kruskal <- list(res = res, factor = input$factor_column, dep = input$column)
     }
+    df <- revert_group_data(prep$df, input$factor_column, prep$original_col)
+  })
+  
+  output$kruskal_out <- renderPrint({
+    if (is.null(test_store$kruskal)) cat("Waiting... Click 'Kruskal-Wallis' in the sidebar.")
+    else if (!is.null(test_store$kruskal$error)) cat("ERROR:", test_store$kruskal$error)
+    else print(test_store$kruskal$res)
+  })
+  
+  output$kruskal_exp <- renderUI({
+    res <- test_store$kruskal
+    if (is.null(res) || !is.null(res$error)) return(NULL)
+    p_val <- res$res$p.value
     
-    return(explanation_html)
+    if (p_val < 0.05) {
+      HTML(paste0("<div style='color: #e74c3c; padding: 10px; border-left: 4px solid #e74c3c; background-color: #333; margin-top: 10px;'><b>Interpretation:</b> The p-value (<b>", format.pval(p_val, digits=4), "</b>) is < 0.05. There is a statistically significant difference in the distributions (or medians) of <b>", res$dep, "</b> between at least two groups of <b>", res$factor, "</b>.</div>"))
+    } else {
+      HTML(paste0("<div style='color: #00bc8c; padding: 10px; border-left: 4px solid #00bc8c; background-color: #333; margin-top: 10px;'><b>Interpretation:</b> The p-value (<b>", format.pval(p_val, digits=4), "</b>) is >= 0.05. There is no statistically significant difference in the distributions of <b>", res$dep, "</b> across the groups of <b>", res$factor, "</b>.</div>"))
+    }
+  })
+  
+  # Wilcoxon (Non-Parametric)
+  observeEvent(input$run_wilcox, {
+    req(input$column, input$factor_column)
+    df <- datasetInput()
+    prep <- prepare_group_data(df, input$factor_column)
+    fmla <- as.formula(paste0("`", input$column, "` ~ `", input$factor_column, "`"))
+    
+    if (prep$levels_count != 2) {
+      test_store$wilcox <- list(error = paste("The Wilcoxon Rank-Sum Test requires exactly 2 distinct groups. Found:", prep$levels_count))
+    } else {
+      res <- wilcox.test(fmla, data = prep$df)
+      test_store$wilcox <- list(res = res, factor = input$factor_column, dep = input$column)
+    }
+    df <- revert_group_data(prep$df, input$factor_column, prep$original_col)
+  })
+  
+  output$wilcox_out <- renderPrint({
+    if (is.null(test_store$wilcox)) cat("Waiting... Click 'Wilcoxon' in the sidebar.")
+    else if (!is.null(test_store$wilcox$error)) cat("ERROR:", test_store$wilcox$error)
+    else print(test_store$wilcox$res)
+  })
+  
+  output$wilcox_exp <- renderUI({
+    res <- test_store$wilcox
+    if (is.null(res) || !is.null(res$error)) return(NULL)
+    p_val <- res$res$p.value
+    
+    if (p_val < 0.05) {
+      HTML(paste0("<div style='color: #e74c3c; padding: 10px; border-left: 4px solid #e74c3c; background-color: #333; margin-top: 10px;'><b>Interpretation:</b> The p-value (<b>", format.pval(p_val, digits=4), "</b>) is < 0.05. The distributions (or medians) of the two groups are <u>significantly different</u> from each other.</div>"))
+    } else {
+      HTML(paste0("<div style='color: #00bc8c; padding: 10px; border-left: 4px solid #00bc8c; background-color: #333; margin-top: 10px;'><b>Interpretation:</b> The p-value (<b>", format.pval(p_val, digits=4), "</b>) is >= 0.05. The distributions of the two groups are <u>not significantly different</u>.</div>"))
+    }
   })
 }
 
