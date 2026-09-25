@@ -23,9 +23,13 @@ ui <- fluidPage(
       
       hr(),
       
-      # Button to trigger normality testing
-      h5("Statistical Tests"),
-      actionButton("run_tests", "Run Statistical Tests", class = "btn-primary", width = "100%")
+      # Buttons for Normality Testing and Modal Graphing
+      h5("Analysis & Visuals"),
+      actionButton("run_tests", "Run Normality Test", class = "btn-primary", width = "100%"),
+      
+      br(), br(),
+      
+      actionButton("open_graph_modal", "Graph", class = "btn-info", width = "100%")
     ),
     
     mainPanel(
@@ -58,12 +62,12 @@ ui <- fluidPage(
       
       hr(),
       
-      # Normality Test Results Section (Moved below the plots)
+      # Normality Test Results Section
       h4("Normality Test Results (Shapiro-Wilk)"),
       verbatimTextOutput("normality_test_out"),
-      uiOutput("normality_explanation"), # Dynamic explanation output
+      uiOutput("normality_explanation"), 
       
-      br(), br() # Add a little bottom padding
+      br(), br() 
     )
   )
 )
@@ -73,13 +77,29 @@ server <- function(input, output, session) {
   
   # Reactive expression to fetch the selected dataset
   datasetInput <- reactive({
-    get(input$dataset, "package:datasets")
+    # Get the raw dataset
+    raw_df <- get(input$dataset, "package:datasets")
+    
+    # Coerce to dataframe (handles matrix datasets if they exist)
+    df <- as.data.frame(raw_df)
+    
+    # Extract current row names and expected default row names (1 to N)
+    r_names <- row.names(df)
+    default_names <- as.character(seq_len(nrow(df)))
+    
+    # If the row names aren't just default sequences, add them as "Title"
+    if (!identical(r_names, default_names)) {
+      df <- cbind(Title = r_names, df)
+      row.names(df) <- NULL # Clear row names to prevent visual redundancy
+    }
+    
+    return(df)
   })
   
-  # Dynamically render the column selection input
+  # Dynamically render the column selection input for main dashboard
   output$col_select <- renderUI({
     df <- datasetInput()
-    # Filter for only numeric columns
+    # Filter for only numeric columns for the main dash
     numeric_cols <- names(df)[sapply(df, is.numeric)]
     selectInput("column", "Choose a numeric column:", choices = numeric_cols)
   })
@@ -116,7 +136,7 @@ server <- function(input, output, session) {
     print(round(stats, 4))
   })
   
-  # --- Plotting Logic ---
+  # --- Plotting Logic (Main Dashboard) ---
   
   apply_plotly_dark_theme <- function(p) {
     p %>% layout(
@@ -171,9 +191,71 @@ server <- function(input, output, session) {
     apply_plotly_dark_theme(p)
   })
   
+  # --- Modal Custom Graph Logic ---
+  
+  observeEvent(input$open_graph_modal, {
+    df <- datasetInput()
+    all_cols <- names(df)
+    
+    showModal(modalDialog(
+      title = paste("Custom Graph Plotter -", input$dataset),
+      size = "xl", 
+      fluidRow(
+        column(4, selectInput("mod_x", "X-Axis Variable:", choices = all_cols)),
+        column(4, selectInput("mod_y", "Y-Axis Variable (Optional):", choices = c("None", all_cols))),
+        column(4, selectInput("mod_type", "Plot Type:", choices = c("Scatter", "Line", "Bar", "Box", "Histogram")))
+      ),
+      hr(),
+      plotlyOutput("modal_plot", height = "550px"),
+      easyClose = TRUE,
+      footer = modalButton("Close")
+    ))
+  })
+  
+  output$modal_plot <- renderPlotly({
+    req(input$mod_x, input$mod_type)
+    df <- datasetInput()
+    x_col <- input$mod_x
+    y_col <- input$mod_y
+    type <- input$mod_type
+    
+    p <- plot_ly()
+    
+    # 1-Dimensional Plot
+    if (y_col == "None") {
+      if (type %in% c("Scatter", "Line")) {
+        mode_val <- ifelse(type == "Scatter", "markers", "lines")
+        p <- plot_ly(x = ~df[[x_col]], type = "scatter", mode = mode_val, name = x_col, marker = list(color = "#f39c12"))
+      } else if (type == "Bar" || type == "Histogram") {
+        p <- plot_ly(x = ~df[[x_col]], type = "histogram", name = x_col, marker = list(color = "#f39c12"))
+      } else if (type == "Box") {
+        p <- plot_ly(y = ~df[[x_col]], type = "box", name = x_col, marker = list(color = "#f39c12"))
+      }
+    } 
+    # 2-Dimensional Plot
+    else {
+      if (type %in% c("Scatter", "Line")) {
+        mode_val <- ifelse(type == "Scatter", "markers", "lines")
+        p <- plot_ly(x = ~df[[x_col]], y = ~df[[y_col]], type = "scatter", mode = mode_val, marker = list(color = "#f39c12"))
+      } else if (type == "Bar") {
+        p <- plot_ly(x = ~df[[x_col]], y = ~df[[y_col]], type = "bar", marker = list(color = "#f39c12"))
+      } else if (type == "Box") {
+        p <- plot_ly(x = ~df[[x_col]], y = ~df[[y_col]], type = "box", marker = list(color = "#f39c12"))
+      } else if (type == "Histogram") {
+        p <- plot_ly(x = ~df[[x_col]], y = ~df[[y_col]], type = "histogram2d")
+      }
+    }
+    
+    p <- p %>% layout(
+      xaxis = list(title = x_col, gridcolor = "#444444"),
+      yaxis = list(title = ifelse(y_col == "None", "Value / Frequency", y_col), gridcolor = "#444444")
+    )
+    
+    apply_plotly_dark_theme(p)
+  })
+  
   # --- Normality Test Logic ---
   
-  # Store results in a structured list so we can parse the exact p-value and warnings
   test_results <- reactiveVal(NULL)
   
   observeEvent(c(input$dataset, input$column), {
@@ -196,11 +278,10 @@ server <- function(input, output, session) {
     }
   })
   
-  # Output the raw statistical test
   output$normality_test_out <- renderPrint({
     res <- test_results()
     if (is.null(res)) {
-      cat("Waiting... Click 'Run Statistical Tests' in the sidebar to execute.")
+      cat("Waiting... Click 'Run Normality Test' in the sidebar to execute.")
     } else if (!is.null(res$error)) {
       cat(res$error)
     } else {
@@ -211,11 +292,9 @@ server <- function(input, output, session) {
     }
   })
   
-  # Output the generated explanation for the test
   output$normality_explanation <- renderUI({
     res <- test_results()
     
-    # Don't show anything if test hasn't run or if there's an error
     if (is.null(res) || !is.null(res$error)) return(NULL)
     
     p_val <- res$test$p.value
