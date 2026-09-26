@@ -72,6 +72,14 @@ ui <- fluidPage(
       
       br(),
       
+      # Categorical testing
+      h5("Categorical Testing"),
+      uiOutput("chisq_var1_select"),
+      uiOutput("chisq_var2_select"),
+      actionButton("run_chisq", "Run Chi-Square", class = "btn-info", width = "100%"),
+      
+      br(), br(),
+      
       # Tools
       h5("Tools"),
       actionButton("open_graph_modal", "Custom Graph", class = "btn-info", width = "100%"),
@@ -153,6 +161,17 @@ ui <- fluidPage(
         uiOutput("wilcox_exp")
       ),
       
+      hr(),
+      
+      h3("Categorical Test Results"),
+      wellPanel(
+        h4("Chi-Square Test of Independence"),
+        plotlyOutput("chisq_plot", height = "350px"),
+        br(),
+        verbatimTextOutput("chisq_out"),
+        uiOutput("chisq_exp")
+      ),
+      
       br(), br() 
     )
   )
@@ -194,6 +213,17 @@ server <- function(input, output, session) {
   output$factor_select <- renderUI({
     df <- datasetInput()
     selectInput("factor_column", "Choose a grouping column (Factor):", choices = names(df))
+  })
+  
+  # Dynamically render categorical selection inputs for Chi-Square
+  output$chisq_var1_select <- renderUI({
+    df <- datasetInput()
+    selectInput("chisq_var1", "Variable 1 (Categorical):", choices = names(df))
+  })
+  
+  output$chisq_var2_select <- renderUI({
+    df <- datasetInput()
+    selectInput("chisq_var2", "Variable 2 (Categorical):", choices = names(df))
   })
   
   # Render the interactive data table
@@ -364,6 +394,7 @@ server <- function(input, output, session) {
                 <li><b>Interquartile Range (IQR):</b> A measure of statistical dispersion representing the middle 50% of the data.</li>
                 <li><b>Parametric Tests:</b> Statistical tests (like ANOVA, T-Test) that assume data follows a normal distribution.</li>
                 <li><b>Non-Parametric Tests:</b> Statistical tests (like Kruskal-Wallis, Wilcoxon) used when data is skewed or ordinal.</li>
+                <li><b>Chi-Square Test:</b> Evaluates whether there is a significant association between two categorical variables.</li>
               </ul>
             ")
           ),
@@ -378,11 +409,18 @@ server <- function(input, output, session) {
                   <li><b>Homogeneity of Variance:</b> The variances of the groups should be roughly equal.</li>
                 </ul>
               </div>
-              <div style='padding: 10px; background-color: #333; border-radius: 5px;'>
+              <div style='padding: 10px; background-color: #333; border-radius: 5px; margin-bottom: 15px;'>
                 <h5 style='color: #00bc8c;'>Non-Parametric Tests (Wilcoxon & Kruskal-Wallis)</h5>
                 <ul>
                   <li><b>Use When:</b> Your data fails the Shapiro-Wilk test (p < 0.05).</li>
                   <li><b>Independence:</b> The samples are independent of each other.</li>
+                </ul>
+              </div>
+              <div style='padding: 10px; background-color: #333; border-radius: 5px;'>
+                <h5 style='color: #3498db;'>Categorical Tests (Chi-Square)</h5>
+                <ul>
+                  <li><b>Independence:</b> The observations are independent.</li>
+                  <li><b>Expected Cell Frequencies:</b> Usually assumes at least 5 expected observations per group/cell.</li>
                 </ul>
               </div>
             ")
@@ -394,14 +432,11 @@ server <- function(input, output, session) {
                 <p style='color: #00bc8c; font-weight: bold;'>Sample Variance:</p>
                 <p>$$s^2 = \\frac{\\sum_{i=1}^{n} (x_i - \\bar{x})^2}{n-1}$$</p>
                 <hr style='border-color: #444;'>
-                <p style='color: #00bc8c; font-weight: bold;'>Sample Standard Deviation:</p>
-                <p>$$s = \\sqrt{ \\frac{\\sum_{i=1}^{n} (x_i - \\bar{x})^2}{n-1} }$$</p>
-                <hr style='border-color: #444;'>
                 <p style='color: #f39c12; font-weight: bold;'>T-Statistic (Welch's Two-Sample):</p>
                 <p>$$t = \\frac{\\bar{x}_1 - \\bar{x}_2}{\\sqrt{ \\frac{s_1^2}{n_1} + \\frac{s_2^2}{n_2} }}$$</p>
                 <hr style='border-color: #444;'>
-                <p style='color: #f39c12; font-weight: bold;'>F-Statistic (ANOVA):</p>
-                <p>$$F = \\frac{MS_{between}}{MS_{within}}$$</p>
+                <p style='color: #3498db; font-weight: bold;'>Chi-Square Statistic:</p>
+                <p>$$\\chi^2 = \\sum \\frac{(O_i - E_i)^2}{E_i}$$</p>
               </div>
             ")
           )
@@ -511,15 +546,16 @@ server <- function(input, output, session) {
   # --- Statistical Tests Data Store ---
   
   normality_results <- reactiveVal(NULL)
-  test_store <- reactiveValues(anova = NULL, ttest = NULL, tukey = NULL, wilcox = NULL, kruskal = NULL)
+  test_store <- reactiveValues(anova = NULL, ttest = NULL, tukey = NULL, wilcox = NULL, kruskal = NULL, chisq = NULL)
   
-  observeEvent(c(input$data_source, input$dataset, input$file_upload, input$column, input$factor_column), {
+  observeEvent(c(input$data_source, input$dataset, input$file_upload, input$column, input$factor_column, input$chisq_var1, input$chisq_var2), {
     normality_results(NULL)
     test_store$anova <- NULL
     test_store$ttest <- NULL
     test_store$tukey <- NULL
     test_store$wilcox <- NULL
     test_store$kruskal <- NULL
+    test_store$chisq <- NULL
   })
   
   # --- Normality Logic & Popup ---
@@ -844,6 +880,70 @@ server <- function(input, output, session) {
     } else {
       HTML(paste0("<div style='color: #00bc8c; padding: 10px; border-left: 4px solid #00bc8c; background-color: #333; margin-top: 10px;'><b>Interpretation:</b> The p-value (<b>", format.pval(p_val, digits=4), "</b>) is >= 0.05. The distributions of the two groups are <u>not significantly different</u>.</div>"))
     }
+  })
+  
+  # --- Chi-Square Logic ---
+  observeEvent(input$run_chisq, {
+    req(input$chisq_var1, input$chisq_var2)
+    df <- datasetInput()
+    
+    if (input$chisq_var1 == input$chisq_var2) {
+      showModal(modalDialog(
+        title = "Invalid Selection",
+        HTML("<div style='color: #e74c3c; font-size: 1.1em;'>The two categorical variables cannot be the same. Please select two distinct columns.</div>"),
+        easyClose = TRUE, footer = modalButton("Close")
+      ))
+      return()
+    }
+    
+    v1 <- as.factor(df[[input$chisq_var1]])
+    v2 <- as.factor(df[[input$chisq_var2]])
+    
+    if (length(levels(v1)) < 2 || length(levels(v2)) < 2) {
+      test_store$chisq <- list(error = "Both variables must have at least 2 distinct levels to run a Chi-Square test.")
+    } else {
+      tbl <- table(v1, v2)
+      res <- suppressWarnings(chisq.test(tbl)) 
+      test_store$chisq <- list(res = res, tbl = tbl, v1_name = input$chisq_var1, v2_name = input$chisq_var2)
+    }
+  })
+  
+  output$chisq_out <- renderPrint({
+    if (is.null(test_store$chisq)) cat("Waiting... Click 'Run Chi-Square' in the sidebar.")
+    else if (!is.null(test_store$chisq$error)) cat("ERROR:", test_store$chisq$error)
+    else print(test_store$chisq$res)
+  })
+  
+  output$chisq_exp <- renderUI({
+    res <- test_store$chisq
+    if (is.null(res) || !is.null(res$error)) return(NULL)
+    p_val <- res$res$p.value
+    
+    if (p_val < 0.05) {
+      HTML(paste0("<div style='color: #e74c3c; padding: 10px; border-left: 4px solid #e74c3c; background-color: #333; margin-top: 10px;'><b>Interpretation:</b> The p-value (<b>", format.pval(p_val, digits=4), "</b>) is < 0.05. There is a statistically significant association between <b>", res$v1_name, "</b> and <b>", res$v2_name, "</b>. The variables are likely dependent.</div>"))
+    } else {
+      HTML(paste0("<div style='color: #00bc8c; padding: 10px; border-left: 4px solid #00bc8c; background-color: #333; margin-top: 10px;'><b>Interpretation:</b> The p-value (<b>", format.pval(p_val, digits=4), "</b>) is >= 0.05. There is no statistically significant association between <b>", res$v1_name, "</b> and <b>", res$v2_name, "</b>. The variables appear independent.</div>"))
+    }
+  })
+  
+  output$chisq_plot <- renderPlotly({
+    res <- test_store$chisq
+    if (is.null(res) || !is.null(res$error)) {
+      p <- plot_ly() %>% layout(xaxis = list(visible = FALSE), yaxis = list(visible = FALSE))
+      return(apply_plotly_dark_theme(p))
+    }
+    
+    df_tbl <- as.data.frame(res$tbl)
+    colnames(df_tbl) <- c("Var1", "Var2", "Freq")
+    
+    p <- plot_ly(df_tbl, x = ~Var1, y = ~Freq, color = ~Var2, type = "bar") %>%
+      layout(barmode = "stack",
+             title = paste("Proportion Stack:", res$v1_name, "by", res$v2_name),
+             xaxis = list(title = res$v1_name, gridcolor = "#444444"),
+             yaxis = list(title = "Count", gridcolor = "#444444"),
+             legend = list(title = list(text = res$v2_name)))
+    
+    apply_plotly_dark_theme(p)
   })
 }
 
