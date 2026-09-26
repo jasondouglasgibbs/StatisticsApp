@@ -4,6 +4,8 @@ library(plotly)
 library(DT)
 library(readxl)
 library(rmarkdown)
+library(httr)
+library(jsonlite)
 
 # Define a list of popular pre-loaded datasets in R
 dataset_choices <- c("mtcars", "iris", "faithful", "airquality", "trees", "quakes", "swiss")
@@ -48,7 +50,7 @@ ui <- fluidPage(
   sidebarLayout(
     sidebarPanel(
       # Data Source Toggle
-      radioButtons("data_source", "Data Source:", choices = c("Preloaded Dataset", "Upload Excel")),
+      radioButtons("data_source", "Data Source:", choices = c("Preloaded Dataset", "Upload Excel", "Fetch from API")),
       
       # Conditional panel for Preloaded Datasets
       conditionalPanel(
@@ -60,6 +62,20 @@ ui <- fluidPage(
       conditionalPanel(
         condition = "input.data_source == 'Upload Excel'",
         fileInput("file_upload", "Choose Excel File", accept = c(".xlsx", ".xls"))
+      ),
+      
+      # Conditional panel for API Fetch
+      conditionalPanel(
+        condition = "input.data_source == 'Fetch from API'",
+        selectInput("api_choice", "Select API Dataset:", choices = c(
+          "Open-Meteo (Historical Weather - No Token)" = "open_meteo",
+          "World Bank (Global GDP - No Token)" = "world_bank",
+          "Alpha Vantage (IBM Stock - Token Required)" = "alpha_vantage"
+        )),
+        uiOutput("api_token_ui"),
+        uiOutput("api_help_ui"),
+        br(),
+        actionButton("fetch_api_btn", "Fetch Data", class = "btn-primary", width = "100%")
       ),
       
       # Dynamic dropdown for column selection
@@ -202,6 +218,90 @@ ui <- fluidPage(
 # Define Server logic
 server <- function(input, output, session) {
   
+  # Reactive value to store API fetched data
+  api_data <- reactiveVal(NULL)
+  
+  # --- API Dynamic UI & Fetch Logic ---
+  output$api_token_ui <- renderUI({
+    if (input$api_choice == "alpha_vantage") {
+      textInput("api_token", "API Token:", value = "", placeholder = "Enter Alpha Vantage Key")
+    } else {
+      textInput("api_token", "API Token:", value = "Not required for this API", placeholder = "Not required")
+    }
+  })
+  
+  output$api_help_ui <- renderUI({
+    if (input$api_choice == "alpha_vantage") {
+      helpText(HTML("Alpha Vantage requires a free token to access stock data.<br><a href='https://www.alphavantage.co/support/#api-key' target='_blank'>Click here to get a free API Token</a>"))
+    } else if (input$api_choice == "open_meteo") {
+      helpText("Open-Meteo provides free, open-source weather data. No token is needed.")
+    } else if (input$api_choice == "world_bank") {
+      helpText("The World Bank provides free global demographic and financial data. No token is needed.")
+    }
+  })
+  
+  observeEvent(input$fetch_api_btn, {
+    showNotification("Fetching API Data... This may take a moment.", id = "api_fetch", duration = NULL, type = "message")
+    
+    tryCatch({
+      if (input$api_choice == "open_meteo") {
+        # Fetching historical daily weather for a generalized coordinate block
+        res <- GET("https://api.open-meteo.com/v1/forecast?latitude=37.88&longitude=-85.96&daily=temperature_2m_max,temperature_2m_min,precipitation_sum&timezone=auto&past_days=90")
+        data <- fromJSON(content(res, "text", encoding = "UTF-8"))
+        df <- as.data.frame(data$daily)
+        colnames(df) <- c("Date", "Max_Temp_C", "Min_Temp_C", "Precipitation_mm")
+        api_data(df)
+        
+      } else if (input$api_choice == "world_bank") {
+        # Fetching GDP Per Capita for all countries
+        res <- GET("https://api.worldbank.org/v2/country/all/indicator/NY.GDP.PCAP.CD?format=json&per_page=300")
+        data <- fromJSON(content(res, "text", encoding = "UTF-8"))
+        df <- data[[2]]
+        df$country_name <- df$country$value
+        df <- df[, c("country_name", "date", "value")]
+        colnames(df) <- c("Country", "Year", "GDP_Per_Capita")
+        df$GDP_Per_Capita <- as.numeric(df$GDP_Per_Capita)
+        df$Year <- as.numeric(df$Year)
+        df <- na.omit(df)
+        api_data(df)
+        
+      } else if (input$api_choice == "alpha_vantage") {
+        token <- input$api_token
+        if (token == "" || token == "Not required for this API") {
+          showNotification("Please enter a valid Alpha Vantage API token.", type = "error")
+          removeNotification("api_fetch")
+          return()
+        }
+        url <- paste0("https://www.alphavantage.co/query?function=TIME_SERIES_DAILY&symbol=IBM&apikey=", token)
+        res <- GET(url)
+        data <- fromJSON(content(res, "text", encoding = "UTF-8"))
+        
+        if (!is.null(data[["Time Series (Daily)"]])) {
+          ts_data <- data[["Time Series (Daily)"]]
+          df <- as.data.frame(do.call(rbind, ts_data))
+          df$Date <- rownames(df)
+          rownames(df) <- NULL
+          colnames(df) <- c("Open", "High", "Low", "Close", "Volume", "Date")
+          
+          # Force numeric conversions
+          for (col in c("Open", "High", "Low", "Close", "Volume")) {
+            df[[col]] <- as.numeric(as.character(df[[col]]))
+          }
+          api_data(df)
+        } else {
+          err_msg <- if(!is.null(data$Information)) data$Information else "Invalid API Key or API limit reached."
+          showNotification(err_msg, type = "error")
+        }
+      }
+      removeNotification("api_fetch")
+      showNotification("Data successfully loaded from API!", type = "message")
+      
+    }, error = function(e) {
+      removeNotification("api_fetch")
+      showNotification(paste("API Fetch Error:", e$message), type = "error", duration = 8)
+    })
+  })
+  
   # Reactive expression to fetch the selected dataset or uploaded file
   datasetInput <- reactive({
     if (input$data_source == "Preloaded Dataset") {
@@ -215,12 +315,14 @@ server <- function(input, output, session) {
         df <- cbind(Title = r_names, df)
         row.names(df) <- NULL 
       }
-      
       return(df)
-    } else {
+    } else if (input$data_source == "Upload Excel") {
       req(input$file_upload)
       df <- as.data.frame(readxl::read_excel(input$file_upload$datapath))
       return(df)
+    } else if (input$data_source == "Fetch from API") {
+      req(api_data())
+      return(api_data())
     }
   })
   
@@ -340,15 +442,23 @@ server <- function(input, output, session) {
   observeEvent(input$open_graph_modal, {
     df <- datasetInput()
     all_cols <- names(df)
-    title_text <- if(input$data_source == "Preloaded Dataset") input$dataset else input$file_upload$name
+    
+    title_text <- if (input$data_source == "Preloaded Dataset") {
+      input$dataset 
+    } else if (input$data_source == "Upload Excel") {
+      input$file_upload$name
+    } else {
+      input$api_choice
+    }
     
     showModal(modalDialog(
       title = paste("Custom Graph Plotter -", title_text),
       size = "xl", 
       fluidRow(
-        column(4, selectInput("mod_x", "X-Axis Variable:", choices = all_cols)),
-        column(4, selectInput("mod_y", "Y-Axis Variable (Optional):", choices = c("None", all_cols))),
-        column(4, selectInput("mod_type", "Plot Type:", choices = c("Scatter", "Line", "Bar", "Box", "Histogram")))
+        column(3, selectInput("mod_x", "X-Axis Variable:", choices = all_cols)),
+        column(3, selectInput("mod_y", "Y-Axis Variable (Optional):", choices = c("None", all_cols))),
+        column(3, selectInput("mod_color", "Color/Group By (Optional):", choices = c("None", all_cols))),
+        column(3, selectInput("mod_type", "Plot Type:", choices = c("Scatter", "Line", "Bar", "Box", "Histogram")))
       ),
       hr(),
       plotlyOutput("modal_plot", height = "550px"),
@@ -362,29 +472,37 @@ server <- function(input, output, session) {
     df <- datasetInput()
     x_col <- input$mod_x
     y_col <- input$mod_y
+    c_col <- input$mod_color
     type <- input$mod_type
     
-    p <- plot_ly()
+    # Build formulas dynamically for plotly data mapping
+    form_x <- as.formula(paste0("~`", x_col, "`"))
+    form_y <- if (y_col != "None") as.formula(paste0("~`", y_col, "`")) else NULL
+    plot_color <- if (c_col == "None") I("#f39c12") else as.formula(paste0("~`", c_col, "`"))
     
     if (y_col == "None") {
       if (type %in% c("Scatter", "Line")) {
         mode_val <- ifelse(type == "Scatter", "markers", "lines")
-        p <- plot_ly(x = ~df[[x_col]], type = "scatter", mode = mode_val, name = x_col, marker = list(color = "#f39c12"))
+        p <- plot_ly(df, x = form_x, type = "scatter", mode = mode_val, color = plot_color)
       } else if (type == "Bar" || type == "Histogram") {
-        p <- plot_ly(x = ~df[[x_col]], type = "histogram", name = x_col, marker = list(color = "#f39c12"))
+        p <- plot_ly(df, x = form_x, type = "histogram", color = plot_color)
       } else if (type == "Box") {
-        p <- plot_ly(y = ~df[[x_col]], type = "box", name = x_col, marker = list(color = "#f39c12"))
+        p <- plot_ly(df, y = form_x, type = "box", color = plot_color)
       }
     } else {
       if (type %in% c("Scatter", "Line")) {
         mode_val <- ifelse(type == "Scatter", "markers", "lines")
-        p <- plot_ly(x = ~df[[x_col]], y = ~df[[y_col]], type = "scatter", mode = mode_val, marker = list(color = "#f39c12"))
+        p <- plot_ly(df, x = form_x, y = form_y, type = "scatter", mode = mode_val, color = plot_color)
       } else if (type == "Bar") {
-        p <- plot_ly(x = ~df[[x_col]], y = ~df[[y_col]], type = "bar", marker = list(color = "#f39c12"))
+        p <- plot_ly(df, x = form_x, y = form_y, type = "bar", color = plot_color)
       } else if (type == "Box") {
-        p <- plot_ly(x = ~df[[x_col]], y = ~df[[y_col]], type = "box", marker = list(color = "#f39c12"))
+        p <- plot_ly(df, x = form_x, y = form_y, type = "box", color = plot_color)
       } else if (type == "Histogram") {
-        p <- plot_ly(x = ~df[[x_col]], y = ~df[[y_col]], type = "histogram2d")
+        if (c_col == "None") {
+          p <- plot_ly(df, x = form_x, y = form_y, type = "histogram2d")
+        } else {
+          p <- plot_ly(df, x = form_x, y = form_y, type = "histogram2d", color = plot_color)
+        }
       }
     }
     
@@ -392,6 +510,11 @@ server <- function(input, output, session) {
       xaxis = list(title = x_col, gridcolor = "#444444"),
       yaxis = list(title = ifelse(y_col == "None", "Value / Frequency", y_col), gridcolor = "#444444")
     )
+    
+    # Render the legend title if a grouping color is selected
+    if (c_col != "None") {
+      p <- p %>% layout(legend = list(title = list(text = paste0("<b>", c_col, "</b>"))))
+    }
     
     apply_plotly_dark_theme(p)
   })
@@ -630,7 +753,13 @@ server <- function(input, output, session) {
       
       writeLines(rmd_content, tempReport)
       
-      ds_name_val <- if (input$data_source == "Preloaded Dataset") input$dataset else input$file_upload$name
+      ds_name_val <- if (input$data_source == "Preloaded Dataset") {
+        input$dataset 
+      } else if (input$data_source == "Upload Excel") {
+        input$file_upload$name
+      } else {
+        input$api_choice
+      }
       
       rmarkdown::render(tempReport, output_file = file,
                         params = list(
@@ -649,7 +778,7 @@ server <- function(input, output, session) {
   normality_results <- reactiveVal(NULL)
   test_store <- reactiveValues(anova = NULL, ttest = NULL, tukey = NULL, wilcox = NULL, kruskal = NULL, chisq = NULL)
   
-  observeEvent(c(input$data_source, input$dataset, input$file_upload, input$column, input$factor_column, input$chisq_var1, input$chisq_var2), {
+  observeEvent(c(input$data_source, input$dataset, input$file_upload, input$fetch_api_btn, input$column, input$factor_column, input$chisq_var1, input$chisq_var2), {
     normality_results(NULL)
     test_store$anova <- NULL
     test_store$ttest <- NULL
