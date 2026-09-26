@@ -70,7 +70,11 @@ ui <- fluidPage(
         selectInput("api_choice", "Select API Dataset:", choices = c(
           "Open-Meteo (Historical Weather - No Token)" = "open_meteo",
           "World Bank (Global GDP - No Token)" = "world_bank",
-          "Alpha Vantage (IBM Stock - Token Required)" = "alpha_vantage"
+          "USGS (Earthquakes Past 30 Days - No Token)" = "usgs_earthquakes",
+          "REST Countries (Demographics - No Token)" = "rest_countries",
+          "Alpha Vantage (IBM Stock - Token Required)" = "alpha_vantage",
+          "NASA NeoWs (Asteroids - Token Required)" = "nasa_asteroids",
+          "ExchangeRate-API (Currency Rates - Token Required)" = "exchange_rate"
         )),
         uiOutput("api_token_ui"),
         uiOutput("api_help_ui"),
@@ -223,8 +227,9 @@ server <- function(input, output, session) {
   
   # --- API Dynamic UI & Fetch Logic ---
   output$api_token_ui <- renderUI({
-    if (input$api_choice == "alpha_vantage") {
-      textInput("api_token", "API Token:", value = "", placeholder = "Enter Alpha Vantage Key")
+    token_apis <- c("alpha_vantage", "nasa_asteroids", "exchange_rate")
+    if (input$api_choice %in% token_apis) {
+      textInput("api_token", "API Token:", value = "", placeholder = "Enter your API Key here")
     } else {
       textInput("api_token", "API Token:", value = "Not required for this API", placeholder = "Not required")
     }
@@ -233,10 +238,18 @@ server <- function(input, output, session) {
   output$api_help_ui <- renderUI({
     if (input$api_choice == "alpha_vantage") {
       helpText(HTML("Alpha Vantage requires a free token to access stock data.<br><a href='https://www.alphavantage.co/support/#api-key' target='_blank'>Click here to get a free API Token</a>"))
+    } else if (input$api_choice == "nasa_asteroids") {
+      helpText(HTML("NASA Open APIs require a free token for higher rate limits.<br><a href='https://api.nasa.gov/' target='_blank'>Click here to register for a free API Key</a>"))
+    } else if (input$api_choice == "exchange_rate") {
+      helpText(HTML("ExchangeRate-API requires a free token for global currency rates.<br><a href='https://app.exchangerate-api.com/sign-up' target='_blank'>Click here to get a free API Token</a>"))
     } else if (input$api_choice == "open_meteo") {
       helpText("Open-Meteo provides free, open-source weather data. No token is needed.")
     } else if (input$api_choice == "world_bank") {
       helpText("The World Bank provides free global demographic and financial data. No token is needed.")
+    } else if (input$api_choice == "usgs_earthquakes") {
+      helpText("The USGS provides free geospatial and seismic data globally. No token is needed.")
+    } else if (input$api_choice == "rest_countries") {
+      helpText("REST Countries provides open demographic and regional data for all nations. No token is needed.")
     }
   })
   
@@ -244,6 +257,15 @@ server <- function(input, output, session) {
     showNotification("Fetching API Data... This may take a moment.", id = "api_fetch", duration = NULL, type = "message")
     
     tryCatch({
+      token <- input$api_token
+      token_apis <- c("alpha_vantage", "nasa_asteroids", "exchange_rate")
+      
+      if (input$api_choice %in% token_apis && (token == "" || token == "Not required for this API")) {
+        showNotification("Please enter a valid API token for this service.", type = "error")
+        removeNotification("api_fetch")
+        return()
+      }
+      
       if (input$api_choice == "open_meteo") {
         # Fetching historical daily weather for a generalized coordinate block
         res <- GET("https://api.open-meteo.com/v1/forecast?latitude=37.88&longitude=-85.96&daily=temperature_2m_max,temperature_2m_min,precipitation_sum&timezone=auto&past_days=90")
@@ -265,13 +287,58 @@ server <- function(input, output, session) {
         df <- na.omit(df)
         api_data(df)
         
+      } else if (input$api_choice == "usgs_earthquakes") {
+        # Fetching all M1.0+ earthquakes from the past 30 days
+        res <- GET("https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/1.0_month.geojson")
+        data <- fromJSON(content(res, "text", encoding = "UTF-8"))
+        df <- data$features$properties
+        df <- df[, c("mag", "place", "sig", "dmin", "rms", "gap", "type")]
+        colnames(df) <- c("Magnitude", "Location", "Significance", "Min_Distance", "RMS", "Gap", "Event_Type")
+        df <- na.omit(df)
+        api_data(df)
+        
+      } else if (input$api_choice == "rest_countries") {
+        # Fetching country demographics
+        res <- GET("https://restcountries.com/v3.1/all")
+        data <- fromJSON(content(res, "text", encoding = "UTF-8"))
+        df <- data.frame(
+          Country = data$name$common,
+          Region = data$region,
+          Population = as.numeric(data$population),
+          Area_sq_km = as.numeric(data$area)
+        )
+        df <- na.omit(df)
+        api_data(df)
+        
+      } else if (input$api_choice == "nasa_asteroids") {
+        # Fetching Near Earth Objects
+        url <- paste0("https://api.nasa.gov/neo/rest/v1/neo/browse?api_key=", token)
+        res <- GET(url)
+        if (status_code(res) != 200) stop("Invalid API Key or Rate Limit Exceeded.")
+        data <- fromJSON(content(res, "text", encoding = "UTF-8"))
+        neos <- data$near_earth_objects
+        df <- data.frame(
+          Name = neos$name,
+          Absolute_Magnitude = as.numeric(neos$absolute_magnitude_h),
+          Is_Hazardous = as.factor(neos$is_potentially_hazardous_asteroid)
+        )
+        df <- na.omit(df)
+        api_data(df)
+        
+      } else if (input$api_choice == "exchange_rate") {
+        # Fetching currency exchange rates against USD
+        url <- paste0("https://v6.exchangerate-api.com/v6/", token, "/latest/USD")
+        res <- GET(url)
+        if (status_code(res) != 200) stop("Invalid API Key or Rate Limit Exceeded.")
+        data <- fromJSON(content(res, "text", encoding = "UTF-8"))
+        rates <- data$conversion_rates
+        df <- data.frame(
+          Currency = names(rates),
+          Rate_vs_USD = as.numeric(rates)
+        )
+        api_data(df)
+        
       } else if (input$api_choice == "alpha_vantage") {
-        token <- input$api_token
-        if (token == "" || token == "Not required for this API") {
-          showNotification("Please enter a valid Alpha Vantage API token.", type = "error")
-          removeNotification("api_fetch")
-          return()
-        }
         url <- paste0("https://www.alphavantage.co/query?function=TIME_SERIES_DAILY&symbol=IBM&apikey=", token)
         res <- GET(url)
         data <- fromJSON(content(res, "text", encoding = "UTF-8"))
@@ -293,8 +360,11 @@ server <- function(input, output, session) {
           showNotification(err_msg, type = "error")
         }
       }
+      
       removeNotification("api_fetch")
-      showNotification("Data successfully loaded from API!", type = "message")
+      if (!is.null(api_data())) {
+        showNotification("Data successfully loaded from API!", type = "message")
+      }
       
     }, error = function(e) {
       removeNotification("api_fetch")
@@ -738,8 +808,8 @@ server <- function(input, output, session) {
         "```{r}",
         "if(length(x) >= 3 && length(x) <= 5000) {",
         "  res <- shapiro.test(x)",
-        "  cat('**W-Statistic:**', round(res$statistic, 4), '  \\n')",
-        "  cat('**p-value:**', format.pval(res$p.value, digits = 4), '  \\n\\n')",
+        "  cat('**W-Statistic:**', round(res$statistic, 4), '  \n')",
+        "  cat('**p-value:**', format.pval(res$p.value, digits = 4), '  \n\n')",
         "  if (res$p.value < 0.05) {",
         "    cat('**Conclusion:** The data significantly deviates from a normal distribution. **Non-parametric tests are recommended.**')",
         "  } else {",
