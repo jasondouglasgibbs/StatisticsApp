@@ -3,7 +3,7 @@ library(bslib)
 library(plotly)
 library(DT)
 library(readxl)
-library(rmarkdown) # Added for automated HTML report generation
+library(rmarkdown)
 
 # Define a list of popular pre-loaded datasets in R
 dataset_choices <- c("mtcars", "iris", "faithful", "airquality", "trees", "quakes", "swiss")
@@ -417,14 +417,11 @@ server <- function(input, output, session) {
       paste("Statistical_Report_", Sys.Date(), ".html", sep = "")
     },
     content = function(file) {
-      # Show a progress notification while the document is knitting
       showNotification("Generating report, this may take a moment...", type = "message", id = "report_notif", duration = NULL)
       on.exit(removeNotification("report_notif"), add = TRUE)
       
-      # Create a temporary R Markdown file
       tempReport <- file.path(tempdir(), "automated_report.Rmd")
       
-      # Define the R Markdown content as a string
       rmd_content <- c(
         "---",
         "title: 'Exploratory Data Analysis Report'",
@@ -497,10 +494,8 @@ server <- function(input, output, session) {
       
       writeLines(rmd_content, tempReport)
       
-      # Determine dataset name for the report
       ds_name_val <- if (input$data_source == "Preloaded Dataset") input$dataset else input$file_upload$name
       
-      # Render the temporary Rmd file to HTML
       rmarkdown::render(tempReport, output_file = file,
                         params = list(
                           df = datasetInput(),
@@ -604,10 +599,40 @@ server <- function(input, output, session) {
     return(df)
   }
   
+  # Validator to catch errors before test runs
+  validate_factor <- function(df, dep_col, factor_col) {
+    if (dep_col == factor_col) {
+      return("The dependent variable and the grouping column cannot be the same. This mistakenly converts your target variable into a categorical factor, collapsing the model matrix.")
+    }
+    col_data <- df[[factor_col]]
+    unique_vals <- length(unique(na.omit(col_data)))
+    
+    # Check if a numeric column was selected that has too many distinct values
+    if (is.numeric(col_data) && unique_vals > 20) {
+      return(paste0("The selected grouping column <b>", factor_col, "</b> has too many unique numeric values (", unique_vals, "). It is likely a continuous variable, not a factorable category."))
+    }
+    if (unique_vals == nrow(df) && nrow(df) > 2) {
+      return(paste0("The selected grouping column <b>", factor_col, "</b> contains completely unique rows. It is likely an ID column, not a factorable category."))
+    }
+    return(NULL)
+  }
+  
   # ANOVA
   observeEvent(input$run_anova, {
     req(input$column, input$factor_column)
     df <- datasetInput()
+    
+    # Run the pre-flight checks
+    err_msg <- validate_factor(df, input$column, input$factor_column)
+    if (!is.null(err_msg)) {
+      showModal(modalDialog(
+        title = "Invalid Grouping Factor",
+        HTML(paste0("<div style='color: #e74c3c; font-size: 1.1em;'>", err_msg, "</div>")),
+        easyClose = TRUE, footer = modalButton("Close")
+      ))
+      return()
+    }
+    
     prep <- prepare_group_data(df, input$factor_column)
     fmla <- as.formula(paste0("`", input$column, "` ~ `", input$factor_column, "`"))
     
@@ -642,6 +667,17 @@ server <- function(input, output, session) {
   observeEvent(input$run_ttest, {
     req(input$column, input$factor_column)
     df <- datasetInput()
+    
+    err_msg <- validate_factor(df, input$column, input$factor_column)
+    if (!is.null(err_msg)) {
+      showModal(modalDialog(
+        title = "Invalid Grouping Factor",
+        HTML(paste0("<div style='color: #e74c3c; font-size: 1.1em;'>", err_msg, "</div>")),
+        easyClose = TRUE, footer = modalButton("Close")
+      ))
+      return()
+    }
+    
     prep <- prepare_group_data(df, input$factor_column)
     fmla <- as.formula(paste0("`", input$column, "` ~ `", input$factor_column, "`"))
     
@@ -676,6 +712,17 @@ server <- function(input, output, session) {
   observeEvent(input$run_tukey, {
     req(input$column, input$factor_column)
     df <- datasetInput()
+    
+    err_msg <- validate_factor(df, input$column, input$factor_column)
+    if (!is.null(err_msg)) {
+      showModal(modalDialog(
+        title = "Invalid Grouping Factor",
+        HTML(paste0("<div style='color: #e74c3c; font-size: 1.1em;'>", err_msg, "</div>")),
+        easyClose = TRUE, footer = modalButton("Close")
+      ))
+      return()
+    }
+    
     prep <- prepare_group_data(df, input$factor_column)
     fmla <- as.formula(paste0("`", input$column, "` ~ `", input$factor_column, "`"))
     
@@ -713,6 +760,17 @@ server <- function(input, output, session) {
   observeEvent(input$run_kruskal, {
     req(input$column, input$factor_column)
     df <- datasetInput()
+    
+    err_msg <- validate_factor(df, input$column, input$factor_column)
+    if (!is.null(err_msg)) {
+      showModal(modalDialog(
+        title = "Invalid Grouping Factor",
+        HTML(paste0("<div style='color: #e74c3c; font-size: 1.1em;'>", err_msg, "</div>")),
+        easyClose = TRUE, footer = modalButton("Close")
+      ))
+      return()
+    }
+    
     prep <- prepare_group_data(df, input$factor_column)
     fmla <- as.formula(paste0("`", input$column, "` ~ `", input$factor_column, "`"))
     
@@ -747,6 +805,17 @@ server <- function(input, output, session) {
   observeEvent(input$run_wilcox, {
     req(input$column, input$factor_column)
     df <- datasetInput()
+    
+    err_msg <- validate_factor(df, input$column, input$factor_column)
+    if (!is.null(err_msg)) {
+      showModal(modalDialog(
+        title = "Invalid Grouping Factor",
+        HTML(paste0("<div style='color: #e74c3c; font-size: 1.1em;'>", err_msg, "</div>")),
+        easyClose = TRUE, footer = modalButton("Close")
+      ))
+      return()
+    }
+    
     prep <- prepare_group_data(df, input$factor_column)
     fmla <- as.formula(paste0("`", input$column, "` ~ `", input$factor_column, "`"))
     
