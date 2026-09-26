@@ -339,7 +339,6 @@ server <- function(input, output, session) {
         api_data(df)
         
       } else if (input$api_choice == "nws_weather") {
-        # Fetching recent observations for Godman Army Airfield (KFTK)
         res <- GET("https://api.weather.gov/stations/KFTK/observations", add_headers("User-Agent" = "R-Shiny-App"))
         data <- fromJSON(content(res, "text", encoding = "UTF-8"), flatten = TRUE)
         df <- data$features[, c("properties.timestamp", "properties.temperature.value", "properties.windSpeed.value", "properties.barometricPressure.value", "properties.relativeHumidity.value")]
@@ -575,10 +574,13 @@ server <- function(input, output, session) {
       title = paste("Custom Graph Plotter -", title_text),
       size = "xl", 
       fluidRow(
+        column(12, textInput("mod_title", "Graph Title (Optional):", value = "", placeholder = "Enter a custom title to display centered above the graph..."))
+      ),
+      fluidRow(
         column(3, selectInput("mod_x", "X-Axis Variable:", choices = all_cols)),
         column(3, selectInput("mod_y", "Y-Axis Variable (Optional):", choices = c("None", all_cols))),
         column(3, selectInput("mod_color", "Color/Group By (Optional):", choices = c("None", all_cols))),
-        column(3, selectInput("mod_type", "Plot Type:", choices = c("Scatter", "Line", "Bar", "Box", "Histogram")))
+        column(3, selectInput("mod_type", "Plot Type:", choices = c("Scatter", "Line", "Area", "Bar", "Box", "Violin", "Histogram", "Pie", "Donut")))
       ),
       hr(),
       plotlyOutput("modal_plot", height = "550px"),
@@ -600,39 +602,66 @@ server <- function(input, output, session) {
     form_y <- if (y_col != "None") as.formula(paste0("~`", y_col, "`")) else NULL
     plot_color <- if (c_col == "None") I("#f39c12") else as.formula(paste0("~`", c_col, "`"))
     
-    if (y_col == "None") {
-      if (type %in% c("Scatter", "Line")) {
-        mode_val <- ifelse(type == "Scatter", "markers", "lines")
-        p <- plot_ly(df, x = form_x, type = "scatter", mode = mode_val, color = plot_color)
-      } else if (type == "Bar" || type == "Histogram") {
-        p <- plot_ly(df, x = form_x, type = "histogram", color = plot_color)
-      } else if (type == "Box") {
-        p <- plot_ly(df, y = form_x, type = "box", color = plot_color)
+    # Handle Pie & Donut Charts directly
+    if (type %in% c("Pie", "Donut")) {
+      is_donut <- ifelse(type == "Donut", 0.5, 0)
+      
+      if (y_col == "None") {
+        # If no Y is provided, count frequencies of the X column
+        freq_df <- as.data.frame(table(df[[x_col]]))
+        colnames(freq_df) <- c("Category", "Count")
+        p <- plot_ly(freq_df, labels = ~Category, values = ~Count, type = "pie", hole = is_donut)
+      } else {
+        # If both are provided, use X as labels and Y as values
+        p <- plot_ly(df, labels = form_x, values = form_y, type = "pie", hole = is_donut)
       }
+      
     } else {
-      if (type %in% c("Scatter", "Line")) {
-        mode_val <- ifelse(type == "Scatter", "markers", "lines")
-        p <- plot_ly(df, x = form_x, y = form_y, type = "scatter", mode = mode_val, color = plot_color)
-      } else if (type == "Bar") {
-        p <- plot_ly(df, x = form_x, y = form_y, type = "bar", color = plot_color)
-      } else if (type == "Box") {
-        p <- plot_ly(df, x = form_x, y = form_y, type = "box", color = plot_color)
-      } else if (type == "Histogram") {
-        if (c_col == "None") {
-          p <- plot_ly(df, x = form_x, y = form_y, type = "histogram2d")
-        } else {
-          p <- plot_ly(df, x = form_x, y = form_y, type = "histogram2d", color = plot_color)
+      # Handle all standard Cartesian coordinate charts
+      if (y_col == "None") {
+        if (type %in% c("Scatter", "Line", "Area")) {
+          mode_val <- ifelse(type == "Scatter", "markers", "lines")
+          fill_val <- if (type == "Area") "tozeroy" else "none"
+          p <- plot_ly(df, x = form_x, type = "scatter", mode = mode_val, fill = fill_val, color = plot_color)
+        } else if (type == "Bar" || type == "Histogram") {
+          p <- plot_ly(df, x = form_x, type = "histogram", color = plot_color)
+        } else if (type == "Box") {
+          p <- plot_ly(df, y = form_x, type = "box", color = plot_color)
+        } else if (type == "Violin") {
+          p <- plot_ly(df, y = form_x, type = "violin", color = plot_color)
+        }
+      } else {
+        if (type %in% c("Scatter", "Line", "Area")) {
+          mode_val <- ifelse(type == "Scatter", "markers", "lines")
+          fill_val <- if (type == "Area") "tozeroy" else "none"
+          p <- plot_ly(df, x = form_x, y = form_y, type = "scatter", mode = mode_val, fill = fill_val, color = plot_color)
+        } else if (type == "Bar") {
+          p <- plot_ly(df, x = form_x, y = form_y, type = "bar", color = plot_color)
+        } else if (type == "Box") {
+          p <- plot_ly(df, x = form_x, y = form_y, type = "box", color = plot_color)
+        } else if (type == "Violin") {
+          p <- plot_ly(df, x = form_x, y = form_y, type = "violin", color = plot_color)
+        } else if (type == "Histogram") {
+          if (c_col == "None") {
+            p <- plot_ly(df, x = form_x, y = form_y, type = "histogram2d")
+          } else {
+            p <- plot_ly(df, x = form_x, y = form_y, type = "histogram2d", color = plot_color)
+          }
         }
       }
     }
     
+    # Base layout adjustments based on chart type and title
     p <- p %>% layout(
-      xaxis = list(title = x_col, gridcolor = "#444444"),
-      yaxis = list(title = ifelse(y_col == "None", "Value / Frequency", y_col), gridcolor = "#444444")
+      title = if (!is.null(input$mod_title) && trimws(input$mod_title) != "") list(text = paste0("<b>", input$mod_title, "</b>"), x = 0.5, xanchor = 'center') else NULL,
+      xaxis = if(type %in% c("Pie", "Donut")) list(showgrid = FALSE, zeroline = FALSE, showticklabels = FALSE, title = "") else list(title = x_col, gridcolor = "#444444"),
+      yaxis = if(type %in% c("Pie", "Donut")) list(showgrid = FALSE, zeroline = FALSE, showticklabels = FALSE, title = "") else list(title = ifelse(y_col == "None", "Value / Frequency", y_col), gridcolor = "#444444")
     )
     
-    # Render the legend title if a grouping color is selected
-    if (c_col != "None") {
+    # Add dynamic legend titles based on chart type
+    if (type %in% c("Pie", "Donut")) {
+      p <- p %>% layout(legend = list(title = list(text = paste0("<b>", x_col, "</b>"))))
+    } else if (c_col != "None") {
       p <- p %>% layout(legend = list(title = list(text = paste0("<b>", c_col, "</b>"))))
     }
     
