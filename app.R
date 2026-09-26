@@ -16,11 +16,33 @@ ui <- fluidPage(
   # Apply a dark mode theme using bslib
   theme = bs_theme(bootswatch = "darkly"),
   
-  # Flexbox header to place the title on the left and the guide button on the right
+  # Custom CSS for the modal elements
+  tags$head(
+    tags$style(HTML("
+      /* Force the R Engine Text Area into dark mode */
+      #calc_expr { 
+        background-color: #222222 !important; 
+        color: #ffffff !important; 
+        border: 1px solid #444444 !important; 
+      }
+      /* Dark mode iframe inversion hack for external embedded sites */
+      .dark-iframe {
+        border: none; 
+        border-radius: 5px; 
+        filter: invert(0.95) hue-rotate(180deg);
+        background-color: #ffffff; /* Requires a white base to invert into dark gray/black */
+      }
+    "))
+  ),
+  
+  # Flexbox header to place the title on the left and the buttons on the right
   div(
     style = "display: flex; justify-content: space-between; align-items: center; margin-top: 15px; margin-bottom: 20px;",
     h2("Interactive R Dataset Explorer", style = "margin: 0;"),
-    actionButton("open_ref_modal", "Statistical Guide", class = "btn-success")
+    div(
+      actionButton("open_calc_modal", "Scientific Calculator", class = "btn-secondary", style = "margin-right: 10px;"),
+      actionButton("open_ref_modal", "Statistical Guide", class = "btn-success")
+    )
   ),
   
   sidebarLayout(
@@ -372,6 +394,85 @@ server <- function(input, output, session) {
     )
     
     apply_plotly_dark_theme(p)
+  })
+  
+  # --- Scientific Calculator Modal Logic ---
+  observeEvent(input$open_calc_modal, {
+    showModal(modalDialog(
+      title = "Scientific & Statistical Calculator",
+      size = "xl", 
+      tabsetPanel(
+        tabPanel("Scientific Calculator",
+                 br(),
+                 tags$iframe(src = "https://www.desmos.com/scientific", width = "100%", height = "500px", class = "dark-iframe")
+        ),
+        tabPanel("Graphing Calculator",
+                 br(),
+                 tags$iframe(src = "https://www.desmos.com/calculator", width = "100%", height = "500px", class = "dark-iframe")
+        ),
+        tabPanel("R Statistical Engine",
+                 br(),
+                 p("Evaluate advanced R mathematical and statistical expressions in real-time."),
+                 textAreaInput("calc_expr", "Expression:", width = "100%", height = "100px",
+                               placeholder = "e.g., \n# Trigonometry\nround(sin(pi/4), 3) \n\n# Probability (Normal Dist)\npnorm(1.96)"),
+                 wellPanel(
+                   style = "background-color: #222; border-color: #444;",
+                   tags$style("#calc_out { background-color: transparent; border: none; color: #00bc8c; font-size: 1.1em; font-weight: bold; }"),
+                   verbatimTextOutput("calc_out")
+                 ),
+                 hr(),
+                 fluidRow(
+                   column(4,
+                          h5(style="color: #f39c12;", "Basic Math"),
+                          tags$ul(
+                            tags$li(code("sqrt(x)"), ", ", code("abs(x)")),
+                            tags$li(code("exp(x)"), ", ", code("log(x)")),
+                            tags$li(code("factorial(x)")),
+                            tags$li(code("round(x, digits)")),
+                            tags$li(code("choose(n, k)"))
+                          )
+                   ),
+                   column(4,
+                          h5(style="color: #f39c12;", "Trigonometry"),
+                          tags$ul(
+                            tags$li(code("sin(x)"), ", ", code("asin(x)")),
+                            tags$li(code("cos(x)"), ", ", code("acos(x)")),
+                            tags$li(code("tan(x)"), ", ", code("atan(x)")),
+                            tags$li(code("pi"))
+                          )
+                   ),
+                   column(4,
+                          h5(style="color: #f39c12;", "Statistical"),
+                          tags$ul(
+                            tags$li(code("pnorm(q)"), " (Normal Prob)"),
+                            tags$li(code("qnorm(p)"), " (Normal Quant)"),
+                            tags$li(code("pt(q, df)"), " (T Prob)"),
+                            tags$li(code("qt(p, df)"), " (T Quant)"),
+                            tags$li(code("pchisq(q, df)"), " (Chi-Sq Prob)")
+                          )
+                   )
+                 )
+        )
+      ),
+      easyClose = TRUE,
+      footer = modalButton("Close")
+    ))
+  })
+  
+  # Real-time evaluation logic for the R Engine Calculator
+  output$calc_out <- renderPrint({
+    req(input$calc_expr)
+    tryCatch({
+      expr <- parse(text = input$calc_expr)
+      if (length(expr) > 0) {
+        res <- eval(expr)
+        print(res)
+      } else {
+        cat("")
+      }
+    }, error = function(e) {
+      cat("Error: ", e$message)
+    })
   })
   
   # --- Statistical Reference Modal Logic ---
